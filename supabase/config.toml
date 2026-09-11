@@ -1,0 +1,2 @@
+[functions.daily-trends-update]
+verify_jwt = false
