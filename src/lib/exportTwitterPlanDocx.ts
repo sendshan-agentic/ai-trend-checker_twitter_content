@@ -54,8 +54,7 @@ function bodyCell(text: string, widthPct: number, opts?: { bold?: boolean }): Ta
   });
 }
 
-export async function exportTwitterPlanToDocx(days: DayPlan[], fileName = 'Twitter-Content-Plan.docx') {
-  const children: (Paragraph | Table)[] = [];
+export async function exportTwitterPlanToDocx(days: DayPlan[], fileName = 'Twitter-Content-Plan.docx') {  const children: (Paragraph | Table)[] = [];
 
   children.push(
     new Paragraph({
@@ -152,7 +151,16 @@ export async function exportTwitterPlanToDocx(days: DayPlan[], fileName = 'Twitt
     ],
   });
 
-  const blob = await Packer.toBlob(doc);
+  // Note: we deliberately use toArrayBuffer() + a manually constructed Blob
+  // rather than Packer.toBlob(). JSZip's own "blob" output mode has a known
+  // reliability issue in bundled browser builds (it silently produces a
+  // corrupted/truncated zip depending on the bundler's Node polyfills),
+  // while "arraybuffer" mode avoids that code path entirely and has proven
+  // reliable in testing.
+  const arrayBuffer = await Packer.toArrayBuffer(doc);
+  const blob = new Blob([arrayBuffer], {
+    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

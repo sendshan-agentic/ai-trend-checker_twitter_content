@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
+    "buffer": "^6.0.3",
     "docx": "^9.0.2",
     "lucide-react": "^0.446.0",
     "react": "^18.3.1",
