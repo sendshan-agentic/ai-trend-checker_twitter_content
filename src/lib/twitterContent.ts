@@ -1,6 +1,7 @@
 import type { TrendingTopic, XTrend } from '@/lib/supabase';
 import { formatNumber } from '@/lib/utils';
 import { findRelevantHandles } from '@/lib/twitterHandles';
+import { skyaCtaLine, SKYA_HASHTAG } from '@/lib/skyaBrand';
 
 export type GeneratedTweet = {
   id: string;
@@ -217,23 +218,23 @@ function buildDayTweets(
     });
   }
 
-  // Slot 4: Recap / CTA tweet summarizing the day's signal
+  // Slot 4: Recap tweet that ties the day's signal back to SKYA's own
+  // pitch (AI visibility) — Skyram's own product gets a natural, rotating
+  // mention here every day rather than every tweet reading like an ad.
   const topicForRecap = topicD || topicA;
   {
-    const tags = hashtagsFor(dayHashtags, 3, 3);
+    const tags = hashtagsFor(dayHashtags, 3, 2);
+    if (!tags.includes(SKYA_HASHTAG)) tags.push(SKYA_HASHTAG);
     const headline = topicForRecap ? topicForRecap.title : 'AI trends';
-    const mentions = mentionsFor(headline);
     const text = `${recapLead}: "${truncate(
       headline,
-      120
-    )}" is leading the conversation. Bookmark this and follow along — we're tracking what's actually breaking through the noise, not just what's loud. ${mentionLine(
-      mentions
-    )} ${tags.join(' ')}`;
+      100
+    )}" is leading the conversation. ${skyaCtaLine(dayIndex)} ${tags.join(' ')}`;
     tweets.push({
       id: `d${dayIndex + 1}-4`,
       text: truncate(text.replace(/\s+/g, ' ').trim(), 280),
       hashtags: tags,
-      mentions,
+      mentions: [],
       basedOn: headline,
     });
   }

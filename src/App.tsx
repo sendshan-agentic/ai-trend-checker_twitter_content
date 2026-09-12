@@ -282,7 +282,7 @@ export default function App() {
 
         <XTrends trends={xTrends} />
 
-        <TwitterContentPlan topics={topics} xTrends={xTrends} />
+        <TwitterContentPlan topics={topics} xTrends={xTrends} referenceDate={selectedDate} />
 
         <footer className="pt-8 pb-4 text-center">
           <p className="text-xs text-gray-600">

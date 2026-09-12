@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Twitter, Download, Loader2, Copy, Check, Hash } from 'lucide-react';
 import type { TrendingTopic, XTrend } from '@/lib/supabase';
 import { generateFiveDayTwitterPlan } from '@/lib/twitterContent';
@@ -7,15 +7,33 @@ import { exportTwitterPlanToDocx } from '@/lib/exportTwitterPlanDocx';
 type TwitterContentPlanProps = {
   topics: TrendingTopic[];
   xTrends: XTrend[];
+  /** The date currently selected in the app (YYYY-MM-DD), used as day 1 of
+   * the plan so the content always starts from whatever data is showing —
+   * once trend data refreshes daily, this naturally advances the plan too. */
+  referenceDate?: string;
 };
 
-export function TwitterContentPlan({ topics, xTrends }: TwitterContentPlanProps) {
+export function TwitterContentPlan({ topics, xTrends, referenceDate }: TwitterContentPlanProps) {
   const [activeDay, setActiveDay] = useState(0);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
 
-  const plan = useMemo(() => generateFiveDayTwitterPlan(topics, xTrends), [topics, xTrends]);
+  const startDate = useMemo(
+    () => (referenceDate ? new Date(`${referenceDate}T00:00:00`) : new Date()),
+    [referenceDate]
+  );
+  const plan = useMemo(
+    () => generateFiveDayTwitterPlan(topics, xTrends, startDate),
+    [topics, xTrends, startDate]
+  );
   const hasData = topics.length > 0 || xTrends.length > 0;
+
+  // If the underlying trend data changes (new date selected, or a fresh
+  // day's data comes in), snap back to Day 1 instead of leaving the user on
+  // a stale tab index.
+  useEffect(() => {
+    setActiveDay(0);
+  }, [topics, xTrends]);
 
   const handleCopy = async (id: string, text: string) => {
     try {
