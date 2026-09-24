@@ -1,7 +1,7 @@
 import type { TrendingTopic, XTrend } from '@/lib/supabase';
 import { formatNumber } from '@/lib/utils';
 import { findRelevantHandles } from '@/lib/twitterHandles';
-import { skyaCtaLine, SKYA_HASHTAG } from '@/lib/skyaBrand';
+import { skyaFeatureLine, SKYA_HASHTAG } from '@/lib/skyaBrand';
 
 export type GeneratedTweet = {
   id: string;
@@ -241,6 +241,29 @@ const LIGHT_ARCHETYPES: LightArchetype[] = [
   (u, tags) => `Not everything trending deserves attention, but ${u.title} being ${u.blurb} is worth a second look. ${tags.join(' ')}`,
 ];
 
+/**
+ * Guaranteed once-per-day "storytelling" slot: a myth vs. fact framing.
+ * Kept separate from the general archetype pools (rather than picked
+ * randomly) so every single day reliably includes exactly one of these,
+ * per the requested format — with the slot position rotated day to day so
+ * it doesn't always land in the same spot on the page.
+ */
+function mythVsFactRich(u: ContentUnit, tags: string[]): string {
+  return `Myth: "${truncate(
+    u.title,
+    80
+  )}" changes everything overnight. Fact: ${truncate(
+    u.blurb,
+    120
+  )} Real adoption still takes months of integration, testing, and change management. ${tags.join(' ')}`;
+}
+
+function mythVsFactLight(u: ContentUnit, tags: string[]): string {
+  return `Myth: a hashtag trending means the tech behind it is mature and ready to use. Fact: ${u.title} being ${u.blurb} mostly reflects attention, not readiness. Worth remembering before you commit budget. ${tags.join(
+    ' '
+  )}`;
+}
+
 function hashSeed(id: string): number {
   let h = 0;
   for (let i = 0; i < id.length; i++) {
@@ -249,21 +272,22 @@ function hashSeed(id: string): number {
   return h || 1;
 }
 
-const SKYA_ROTATION = 5; // matches skyaCtaLine's rotation length
+const SKYA_ROTATION = 8; // matches skyaFeatureLine's rotation length
 
 function buildSkyaTweet(globalIndex: number, unit: ContentUnit | undefined, tags: string[]): GeneratedTweet {
-  const headline = unit ? unit.title : 'AI trends';
-  const text = clean(
-    `Everyone's watching "${truncate(headline, 90)}" today. ${skyaCtaLine(
-      globalIndex % SKYA_ROTATION
-    )} ${tags.join(' ')}`
-  );
+  // Leads with SKYA's own feature/USP, not a restatement of the day's
+  // trending topic — only a very light, optional categorical nod at the
+  // end keeps it from feeling completely disconnected from the rest of the
+  // day's content, without making SKYA's own message secondary.
+  const feature = skyaFeatureLine(globalIndex);
+  const categoryNote = unit ? ` Worth asking even in ${unit.category.toLowerCase()}.` : '';
+  const text = clean(`${feature}${categoryNote} ${tags.join(' ')}`);
   return {
     id: `skya-${globalIndex}`,
     text: truncate(text, 280),
     hashtags: tags,
     mentions: [],
-    basedOn: headline,
+    basedOn: unit ? unit.title : 'SKYA',
   };
 }
 
@@ -326,31 +350,40 @@ export function generateFiveDayTwitterPlan(
     const tweets: GeneratedTweet[] = [];
 
     if (shuffledUnits.length > 0) {
+      const mythSlot = dayIndex % 3; // rotates which of the 3 main slots tells the myth-vs-fact story
+
       for (let slot = 0; slot < 3; slot++) {
         const globalSlotIndex = dayIndex * 4 + slot;
         const unit = shuffledUnits[globalSlotIndex % shuffledUnits.length];
         const tags = hashtagsFor(globalHashtagPool, globalSlotIndex, slot === 1 ? 2 : 3, [unit.primaryTag]);
         const mentions = mentionsFor(unit.matchText);
-        const archetype = nextArchetypeFor(unit);
 
         let text: string;
-        if (unit.kind === 'topic') {
-          const base = (archetype as RichArchetype)(unit, tags, mentions);
-          text = mentions.length > 0 && !base.includes(mentions[0]) ? `${base} ${mentionLine(mentions)}` : base;
+        if (slot === mythSlot) {
+          // Guaranteed once-per-day storytelling slot — doesn't consume a
+          // turn from that unit's normal archetype rotation, since it's a
+          // fixed, separate format rather than one of the general angles.
+          text = unit.kind === 'topic' ? mythVsFactRich(unit, tags) : mythVsFactLight(unit, tags);
         } else {
-          text = (archetype as LightArchetype)(unit, tags);
+          const archetype = nextArchetypeFor(unit);
+          if (unit.kind === 'topic') {
+            const base = (archetype as RichArchetype)(unit, tags, mentions);
+            text = mentions.length > 0 && !base.includes(mentions[0]) ? `${base} ${mentionLine(mentions)}` : base;
+          } else {
+            text = (archetype as LightArchetype)(unit, tags);
+          }
         }
 
         tweets.push({
           id: `d${dayIndex + 1}-${slot + 1}`,
           text: truncate(clean(text), 280),
           hashtags: tags,
-          mentions,
+          mentions: slot === mythSlot ? [] : mentions,
           basedOn: unit.title,
         });
       }
 
-      // 4th slot: SKYA tie-in, anchored to a real, globally-indexed unit.
+      // 4th slot: SKYA's own feature/USP, only loosely tied to the day.
       const skyaGlobalIndex = dayIndex * 4 + 3;
       const skyaUnit = shuffledUnits[skyaGlobalIndex % shuffledUnits.length];
       const skyaTags = hashtagsFor(globalHashtagPool, skyaGlobalIndex, 2, [skyaUnit.primaryTag]);
