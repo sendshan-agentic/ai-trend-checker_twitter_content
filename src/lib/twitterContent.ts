@@ -25,7 +25,10 @@ function cleanHashtag(tag: string): string {
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
-  return `${text.slice(0, max - 1).trim()}…`;
+  const cut = text.slice(0, max - 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  const safe = lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return `${safe.trim()}…`;
 }
 
 function clean(text: string): string {
@@ -111,23 +114,33 @@ function mentionsFor(sourceText: string, max = 3): string[] {
  * day and per position so three items stitched together don't all sound
  * like they came from the same fill-in-the-blank sentence.
  */
-function describeItem(unit: ContentUnit, phrasingIndex: number): string {
-  const name = unit.kind === 'topic' ? `"${truncate(unit.title, 70)}"` : unit.title;
+function describeItem(unit: ContentUnit, phrasingIndex: number, blurbMax: number): string {
+  const name = unit.kind === 'topic' ? `"${truncate(unit.title, 60)}"` : unit.title;
+  const blurbRaw = truncate(unit.blurb, blurbMax);
+  // Strip any trailing period from the raw blurb before splicing it into a
+  // template that supplies its own punctuation — otherwise a description
+  // that already ends in "." collides with the template's own "." and
+  // produces an obvious ".." artifact.
+  const blurb = blurbRaw.endsWith('…') ? blurbRaw : blurbRaw.replace(/\.+$/, '');
 
+  // Deliberately mixed sentence shapes — short fragments, a question, a
+  // plain statement, an aside in parentheses — so three items stitched
+  // together don't scan as the same sentence with the noun swapped out,
+  // which is the single biggest tell of generated copy.
   const topicPhrasings = [
-    () => `${name} just dropped — ${truncate(unit.blurb, 90)}`,
-    () => `${name} is the one everyone's actually talking about right now`,
-    () => `${name} quietly became the biggest story of the day (${truncate(unit.blurb, 80)})`,
-    () => `${name} is picking up real momentum in ${unit.category.toLowerCase()} circles`,
-    () => `keep an eye on ${name} — ${truncate(unit.blurb, 90)}`,
-    () => `${name} is the plot twist nobody saw coming this week`,
+    () => `${name} just happened. ${blurb}`,
+    () => `so ${name} is a thing now — ${blurb}`,
+    () => `${blurb}. that's ${name} for you`,
+    () => `not gonna lie, ${name} caught me off guard. ${blurb}`,
+    () => `${name}? yeah, ${blurb}`,
+    () => `biggest one today is ${name} — ${blurb}`,
   ];
 
   const hashtagPhrasings = [
-    () => `${name} is climbing fast — ${unit.blurb}`,
-    () => `${name} is suddenly everywhere (${unit.blurb})`,
-    () => `${name} jumped up the charts today — worth watching why`,
-    () => `${name} is the hashtag everyone's quietly watching`,
+    () => `${name} is everywhere right now, no idea why it took off`,
+    () => `also seeing a lot of ${name} today`,
+    () => `${name} climbing the charts — worth a look`,
+    () => `and ${name} is trending again, for what it's worth`,
   ];
 
   const pool = unit.kind === 'topic' ? topicPhrasings : hashtagPhrasings;
@@ -135,23 +148,24 @@ function describeItem(unit: ContentUnit, phrasingIndex: number): string {
 }
 
 const WORLD_INTROS = [
-  "Here's what's actually moving in AI today:",
-  'Quick AI pulse check for today:',
-  "If you only catch one AI update today, make it this:",
-  "Scanning today's AI chatter, a few things stand out:",
-  'The AI world did not slow down today —',
-  "Today's AI headlines, condensed:",
-  "Three things worth your attention in AI right now:",
-  "What's trending in AI as of today:",
+  "what's actually happening in AI today —",
+  'quick AI roundup:',
+  "a couple of things worth knowing today:",
+  "scanning today's AI news, two things stood out.",
+  'the AI world kept moving today.',
+  "today in AI, briefly:",
+  "here's what's trending in AI right now.",
+  "not a slow day in AI —",
 ];
 
 const WORLD_CLOSERS = [
-  'Which one are you actually watching?',
-  "What's catching your eye out of these?",
-  'Curious which of these actually matters a year from now.',
-  'Tell me which one you think is overhyped.',
-  "Drop your take — which of these is the real story?",
-  'Save this if you want to sound informed at dinner tonight.',
+  'which one are you watching?',
+  "what's catching your eye here?",
+  'curious which of these actually matters in a year.',
+  'honestly not sure which one is overhyped yet.',
+  "which of these is the real story, you tell me.",
+  '',
+  '',
 ];
 
 /**
@@ -178,7 +192,11 @@ function buildWorldRoundup(
     };
   }
 
-  const itemsPerPost = Math.min(units.length, units.length >= 2 ? 2 + (dayIndex % 2) : 1); // 2 or 3 items
+  // Capped at 2 items: 3 real stories plus an intro, a closer and hashtags
+  // reliably blows past 280 characters, which is what was cutting the tweet
+  // off mid-sentence with no closer or tags at all. Two items, written long
+  // enough to feel like real sentences, fits the budget honestly.
+  const itemsPerPost = Math.min(units.length, 2);
   const startIdx = dayIndex * 2; // advances the rotation every day, two full day-slots at a time
   const picked: ContentUnit[] = [];
   for (let i = 0; i < itemsPerPost; i++) {
@@ -188,30 +206,33 @@ function buildWorldRoundup(
   const introSeed = dayIndex;
   let attempt = 0;
   let text = '';
+  const tags = picked.flatMap((u) => hashtagsFor(hashtagPool, startIdx, 1, [u.primaryTag]));
+  const dedupedTags = [...new Set(tags)].slice(0, 2);
+  const tagsStr = dedupedTags.join(' ');
 
   // Hard duplicate guard: keep rotating the intro/closer/phrasing offsets
   // until the text is provably not identical to anything already produced
   // in this plan. With dozens of intro/closer/phrasing combinations this
   // resolves almost immediately; it exists as a backstop, not the main
-  // mechanism.
+  // mechanism. Length is budgeted BEFORE assembly (blurbs are sized to fit
+  // along with the intro, closer and hashtags) so nothing gets silently cut
+  // off at the 280-char limit — a final truncate() is a safety net, not the
+  // normal path.
   do {
     const intro = WORLD_INTROS[(introSeed + attempt) % WORLD_INTROS.length];
     const closer = WORLD_CLOSERS[(introSeed + attempt * 3) % WORLD_CLOSERS.length];
-    const sentences = picked.map((u, i) => describeItem(u, introSeed + attempt + i));
 
-    let body: string;
-    if (sentences.length === 1) {
-      body = sentences[0];
-    } else if (sentences.length === 2) {
-      body = `${sentences[0]}. Meanwhile, ${sentences[1]}.`;
-    } else {
-      body = `${sentences[0]}. Meanwhile, ${sentences[1]}. And ${sentences[2]}.`;
-    }
+    const fixedLen = intro.length + closer.length + tagsStr.length + (picked.length - 1) * 2 + 10;
+    const budgetPerItem = Math.max(40, Math.floor((270 - fixedLen) / picked.length));
 
-    const tags = picked.flatMap((u) => hashtagsFor(hashtagPool, startIdx, 1, [u.primaryTag]));
-    const dedupedTags = [...new Set(tags)].slice(0, 3);
+    const sentences = picked
+      .map((u, i) => describeItem(u, introSeed + attempt + i, budgetPerItem))
+      .map((s) => s.replace(/[.…]+$/, '').trim());
 
-    text = truncate(clean(`${intro} ${body} ${closer} ${dedupedTags.join(' ')}`), 280);
+    const body = `${sentences.join('. ')}.`;
+
+    const parts = [intro, body, closer, tagsStr].filter(Boolean);
+    text = truncate(clean(parts.join(' ')), 280);
     attempt++;
   } while (usedTexts.has(text) && attempt < 20);
 
