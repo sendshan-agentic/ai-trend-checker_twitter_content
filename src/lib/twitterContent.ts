@@ -31,6 +31,30 @@ function truncate(text: string, max: number): string {
   return `${safe.trim()}…`;
 }
 
+/**
+ * Shortens a sentence down to a clean, complete-sounding clause instead of
+ * lopping it off mid-word with "…" — which reads as broken/cut-off content
+ * rather than a deliberate short summary. Prefers cutting at the first
+ * natural boundary (., ,, ;, —, "with", "and") at or before max; only falls
+ * back to a bare word-boundary cut (still no ellipsis) if no boundary exists.
+ */
+function clauseTrim(text: string, max: number): string {
+  const t = text.trim().replace(/\.+$/, '');
+  if (t.length <= max) return t;
+  const window = t.slice(0, max);
+  // Negative lookbehind/lookahead on '.' avoids treating a decimal point
+  // inside a version number ("2.0") or similar as a sentence boundary.
+  const boundary = /(?<!\d)[.](?!\d)|[,;—]|(?:\bwith\b)|(?:\band\b)/g;
+  let lastIdx = -1;
+  let m: RegExpExecArray | null;
+  while ((m = boundary.exec(window))) {
+    if (m.index > max * 0.35) lastIdx = m.index;
+  }
+  if (lastIdx > 0) return window.slice(0, lastIdx).trim();
+  const lastSpace = window.lastIndexOf(' ');
+  return (lastSpace > max * 0.5 ? window.slice(0, lastSpace) : window).trim();
+}
+
 function clean(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
@@ -114,14 +138,34 @@ function mentionsFor(sourceText: string, max = 3): string[] {
  * day and per position so three items stitched together don't all sound
  * like they came from the same fill-in-the-blank sentence.
  */
-function describeItem(unit: ContentUnit, phrasingIndex: number, blurbMax: number): string {
+function describeItem(unit: ContentUnit, phrasingIndex: number, itemBudget: number): string {
   const name = unit.kind === 'topic' ? `"${truncate(unit.title, 60)}"` : unit.title;
-  const blurbRaw = truncate(unit.blurb, blurbMax);
-  // Strip any trailing period from the raw blurb before splicing it into a
-  // template that supplies its own punctuation — otherwise a description
-  // that already ends in "." collides with the template's own "." and
-  // produces an obvious ".." artifact.
-  const blurb = blurbRaw.endsWith('…') ? blurbRaw : blurbRaw.replace(/\.+$/, '');
+  // The template words around the blurb ("so ... is a thing now — ", etc.)
+  // cost roughly 20-25 chars on top of the quoted name, so reserve that
+  // before deciding how much of the blurb itself can fit. clauseTrim then
+  // cuts at a natural boundary (comma, "with", "and", etc.) and never
+  // appends "…" — a shortened blurb reads as a deliberate short phrase
+  // instead of content that got cut off mid-sentence.
+  const blurbMax = itemBudget - name.length - 25;
+
+  // A long topic name (brand + product + version string) can eat most of
+  // the per-item budget on its own, leaving too little room to shorten the
+  // blurb into anything that reads as a complete clause. Rather than force
+  // a stub fragment like "Nvidia shipped version.", fall back to a
+  // name-only phrasing once there isn't genuinely enough room for a blurb.
+  if (blurbMax < 40) {
+    const nameOnlyPhrasings = [
+      () => `${name} just happened`,
+      () => `so ${name} is a thing now`,
+      () => `not gonna lie, ${name} caught me off guard`,
+      () => `${name}? yeah, that's today's big one`,
+      () => `biggest one today is ${name}`,
+      () => `and ${name} is making the rounds`,
+    ];
+    return nameOnlyPhrasings[phrasingIndex % nameOnlyPhrasings.length]();
+  }
+
+  const blurb = clauseTrim(unit.blurb, blurbMax);
 
   // Deliberately mixed sentence shapes — short fragments, a question, a
   // plain statement, an aside in parentheses — so three items stitched
@@ -223,7 +267,7 @@ function buildWorldRoundup(
     const closer = WORLD_CLOSERS[(introSeed + attempt * 3) % WORLD_CLOSERS.length];
 
     const fixedLen = intro.length + closer.length + tagsStr.length + (picked.length - 1) * 2 + 10;
-    const budgetPerItem = Math.max(40, Math.floor((270 - fixedLen) / picked.length));
+    const budgetPerItem = Math.max(70, Math.floor((270 - fixedLen) / picked.length));
 
     const sentences = picked
       .map((u, i) => describeItem(u, introSeed + attempt + i, budgetPerItem))
