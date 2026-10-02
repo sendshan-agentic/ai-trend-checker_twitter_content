@@ -1,5 +1,4 @@
 import type { TrendingTopic, XTrend } from '@/lib/supabase';
-import { formatNumber } from '@/lib/utils';
 import { findRelevantHandles } from '@/lib/twitterHandles';
 import { skyaFeatureLine, SKYA_HASHTAG } from '@/lib/skyaBrand';
 
@@ -47,28 +46,12 @@ function seededShuffle<T>(arr: T[], seed: number): T[] {
   return out;
 }
 
-/**
- * A single piece of real, sourced content — either a full trending topic
- * (rich: title, description, viral score, live discussion count) or a
- * trending hashtag on its own (lighter: we only honestly know its rank and
- * the hashtag text itself, so its copy stays scoped to what's actually
- * true — "the #3 trending AI hashtag today" — never inventing stats a
- * hashtag-only entry doesn't have).
- *
- * Combining both into one pool is what lets a day with only 4-6 real
- * trending *topics* still produce a meaningfully larger set of genuinely
- * distinct content instead of recycling the same handful of topics inside
- * reworded sentences.
- */
 type ContentUnit = {
   id: string;
   kind: 'topic' | 'hashtag';
   title: string;
   blurb: string;
   category: string;
-  viralScore?: number;
-  peopleTalking?: number;
-  velocity?: string;
   primaryTag: string;
   matchText: string;
 };
@@ -82,20 +65,14 @@ function topicsToUnits(topics: TrendingTopic[]): ContentUnit[] {
       title: t.title,
       blurb: t.description,
       category: t.category,
-      viralScore: t.viral_score,
-      peopleTalking: t.people_talking,
-      velocity: t.velocity,
       primaryTag: cleanHashtag(t.title.split(/[\s—-]+/)[0] || 'AI'),
       matchText: `${t.title} ${t.category}`,
     }));
 }
 
-/** Hashtags whose text already substantially overlaps a topic's title are
- * skipped as their own unit — they're the same story, not new content. */
 function hashtagsToUnits(xTrends: XTrend[], topics: TrendingTopic[]): ContentUnit[] {
   const globalTrends = xTrends.filter((t) => t.region === 'global');
   const pool = (globalTrends.length > 0 ? globalTrends : xTrends).slice().sort((a, b) => a.rank - b.rank);
-
   const topicWords = topics.map((t) => t.title.toLowerCase().replace(/[^a-z0-9]/g, ''));
 
   return pool
@@ -124,170 +101,157 @@ function hashtagsFor(hashtagPool: string[], offset: number, count: number, avoid
   return out;
 }
 
-function mentionsFor(sourceText: string): string[] {
-  return findRelevantHandles(sourceText, 2);
-}
-
-function mentionLine(mentions: string[]): string {
-  return mentions.length > 0 ? `cc ${mentions.join(' ')}` : '';
+function mentionsFor(sourceText: string, max = 3): string[] {
+  return findRelevantHandles(sourceText, max);
 }
 
 /**
- * Archetypes that need a rich description/stats — only used for full
- * "topic" units, since a bare hashtag unit doesn't have that data and we
- * never invent it.
+ * Short, human phrasings for referencing one item inside a roundup — e.g.
+ * "X just dropped" or "X is the one everyone's buzzing about" — varied per
+ * day and per position so three items stitched together don't all sound
+ * like they came from the same fill-in-the-blank sentence.
  */
-type RichArchetype = (unit: ContentUnit, tags: string[], mentions: string[]) => string;
+function describeItem(unit: ContentUnit, phrasingIndex: number): string {
+  const name = unit.kind === 'topic' ? `"${truncate(unit.title, 70)}"` : unit.title;
 
-const RICH_ARCHETYPES: RichArchetype[] = [
-  (u, tags) =>
-    `${formatNumber(u.peopleTalking ?? 0)} people are already talking about "${truncate(
-      u.title,
-      90
-    )}" — is this actually going to matter in 6 months, or is it just this week's noise? ${tags.join(' ')}`,
+  const topicPhrasings = [
+    () => `${name} just dropped — ${truncate(unit.blurb, 90)}`,
+    () => `${name} is the one everyone's actually talking about right now`,
+    () => `${name} quietly became the biggest story of the day (${truncate(unit.blurb, 80)})`,
+    () => `${name} is picking up real momentum in ${unit.category.toLowerCase()} circles`,
+    () => `keep an eye on ${name} — ${truncate(unit.blurb, 90)}`,
+    () => `${name} is the plot twist nobody saw coming this week`,
+  ];
 
-  (u, tags) =>
-    `Hot take: "${truncate(u.title, 90)}" is more significant than the coverage suggests. ${truncate(
-      u.blurb,
-      110
-    )} Agree or disagree? ${tags.join(' ')}`,
+  const hashtagPhrasings = [
+    () => `${name} is climbing fast — ${unit.blurb}`,
+    () => `${name} is suddenly everywhere (${unit.blurb})`,
+    () => `${name} jumped up the charts today — worth watching why`,
+    () => `${name} is the hashtag everyone's quietly watching`,
+  ];
 
-  (u, tags) =>
-    `Genuine question: has "${truncate(
-      u.title,
-      100
-    )}" actually changed how you work this week, or is it still mostly theoretical for you? ${tags.join(' ')}`,
+  const pool = unit.kind === 'topic' ? topicPhrasings : hashtagPhrasings;
+  return pool[phrasingIndex % pool.length]();
+}
 
-  (u, tags) =>
-    `Prediction: a year from now, "${truncate(
-      u.title,
-      90
-    )}" is either a footnote nobody remembers or the thing every "how we got here" thread references. No in-between. ${tags.join(
-      ' '
-    )}`,
+const WORLD_INTROS = [
+  "Here's what's actually moving in AI today:",
+  'Quick AI pulse check for today:',
+  "If you only catch one AI update today, make it this:",
+  "Scanning today's AI chatter, a few things stand out:",
+  'The AI world did not slow down today —',
+  "Today's AI headlines, condensed:",
+  "Three things worth your attention in AI right now:",
+  "What's trending in AI as of today:",
+];
 
-  (u, tags) =>
-    `Unpopular opinion: the excitement around "${truncate(
-      u.title,
-      90
-    )}" says as much about our appetite for novelty as the actual capability gap it closes. ${tags.join(' ')}`,
-
-  (u, tags) =>
-    `In plain terms: "${truncate(u.title, 80)}" means ${truncate(
-      u.blurb,
-      130
-    )} That's the part most hot-take threads are skipping. ${tags.join(' ')}`,
-
-  (u, tags) =>
-    `If you're building in ${u.category.toLowerCase()}, "${truncate(
-      u.title,
-      90
-    )}" just quietly changed your roadmap — whether you've clocked it yet or not. What's your move? ${tags.join(' ')}`,
-
-  (u, tags) =>
-    `${u.viralScore ?? '—'}/100 viral score, ${formatNumber(
-      u.peopleTalking ?? 0
-    )} people talking — "${truncate(u.title, 80)}" is one of the loudest signals in AI today. Loud doesn't always mean important. ${tags.join(
-      ' '
-    )}`,
-
-  (u, tags) => {
-    const velocityLine =
-      u.velocity === 'breakout'
-        ? "this isn't slow-building, it's a genuine breakout"
-        : u.velocity === 'rising'
-        ? 'the curve on this is still climbing, not flattening'
-        : 'this has settled into the conversation as a steady fixture, not a spike';
-    return `On "${truncate(u.title, 90)}": ${velocityLine}. Worth tracking if you're anywhere near ${u.category.toLowerCase()}. ${tags.join(
-      ' '
-    )}`;
-  },
-
-  (u, tags, mentions) =>
-    mentions.length > 0
-      ? `${mentions.join(' ')} — genuinely curious how you'd respond to the reaction "${truncate(
-          u.title,
-          80
-        )}" is getting right now. ${tags.join(' ')}`
-      : `Someone from the team behind "${truncate(
-          u.title,
-          90
-        )}" should really do an AMA — the reaction has outpaced the announcement itself. ${tags.join(' ')}`,
-
-  (u, tags) =>
-    `What nobody's saying out loud about "${truncate(u.title, 90)}": ${truncate(
-      u.blurb,
-      120
-    )} That's the actual story here, not the headline. ${tags.join(' ')}`,
-
-  (u, tags) =>
-    `Against everything else that shipped this month, "${truncate(
-      u.title,
-      90
-    )}" is the one actually worth your attention — most of the rest is repackaged hype. Change my mind. ${tags.join(' ')}`,
+const WORLD_CLOSERS = [
+  'Which one are you actually watching?',
+  "What's catching your eye out of these?",
+  'Curious which of these actually matters a year from now.',
+  'Tell me which one you think is overhyped.',
+  "Drop your take — which of these is the real story?",
+  'Save this if you want to sound informed at dinner tonight.',
 ];
 
 /**
- * Lighter archetypes for hashtag-only units — scoped strictly to what we
- * actually know (its rank, that it's trending) rather than inventing a
- * description or stats a bare hashtag doesn't have.
+ * Builds one day's "what's happening" post as a short, human-sounding
+ * roundup stitching together 2-3 real trending items, rather than one
+ * template sentence about a single topic. Combining different real items
+ * each day (the pool keeps rotating forward, never resetting) is what
+ * makes repetition genuinely avoidable even with a small daily data set —
+ * the combination itself, not just the wording, changes day to day.
  */
-type LightArchetype = (unit: ContentUnit, tags: string[]) => string;
-
-const LIGHT_ARCHETYPES: LightArchetype[] = [
-  (u, tags) => `${u.title} is ${u.blurb} — anyone actually tracking what's driving it, or is this just algorithm noise? ${tags.join(' ')}`,
-  (u, tags) => `Keeping an eye on ${u.title} — it's ${u.blurb}, which usually means something real is brewing underneath. ${tags.join(' ')}`,
-  (u, tags) => `${u.title} climbing the charts today (${u.blurb}). Curious what's fueling it — drop your theory below. ${tags.join(' ')}`,
-  (u, tags) => `Not everything trending deserves attention, but ${u.title} being ${u.blurb} is worth a second look. ${tags.join(' ')}`,
-];
-
-/**
- * Guaranteed once-per-day "storytelling" slot: a myth vs. fact framing.
- * Kept separate from the general archetype pools (rather than picked
- * randomly) so every single day reliably includes exactly one of these,
- * per the requested format — with the slot position rotated day to day so
- * it doesn't always land in the same spot on the page.
- */
-function mythVsFactRich(u: ContentUnit, tags: string[]): string {
-  return `Myth: "${truncate(
-    u.title,
-    80
-  )}" changes everything overnight. Fact: ${truncate(
-    u.blurb,
-    120
-  )} Real adoption still takes months of integration, testing, and change management. ${tags.join(' ')}`;
-}
-
-function mythVsFactLight(u: ContentUnit, tags: string[]): string {
-  return `Myth: a hashtag trending means the tech behind it is mature and ready to use. Fact: ${u.title} being ${u.blurb} mostly reflects attention, not readiness. Worth remembering before you commit budget. ${tags.join(
-    ' '
-  )}`;
-}
-
-function hashSeed(id: string): number {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) {
-    h = (h * 31 + id.charCodeAt(i)) % 1000000007;
+function buildWorldRoundup(
+  dayIndex: number,
+  units: ContentUnit[],
+  hashtagPool: string[],
+  usedTexts: Set<string>
+): GeneratedTweet {
+  if (units.length === 0) {
+    return {
+      id: `d${dayIndex + 1}-world`,
+      text: "No fresh trend data to report yet today — check back once today's scan completes.",
+      hashtags: [],
+      mentions: [],
+      basedOn: 'none',
+    };
   }
-  return h || 1;
+
+  const itemsPerPost = Math.min(units.length, units.length >= 2 ? 2 + (dayIndex % 2) : 1); // 2 or 3 items
+  const startIdx = dayIndex * 2; // advances the rotation every day, two full day-slots at a time
+  const picked: ContentUnit[] = [];
+  for (let i = 0; i < itemsPerPost; i++) {
+    picked.push(units[(startIdx + i) % units.length]);
+  }
+
+  const introSeed = dayIndex;
+  let attempt = 0;
+  let text = '';
+
+  // Hard duplicate guard: keep rotating the intro/closer/phrasing offsets
+  // until the text is provably not identical to anything already produced
+  // in this plan. With dozens of intro/closer/phrasing combinations this
+  // resolves almost immediately; it exists as a backstop, not the main
+  // mechanism.
+  do {
+    const intro = WORLD_INTROS[(introSeed + attempt) % WORLD_INTROS.length];
+    const closer = WORLD_CLOSERS[(introSeed + attempt * 3) % WORLD_CLOSERS.length];
+    const sentences = picked.map((u, i) => describeItem(u, introSeed + attempt + i));
+
+    let body: string;
+    if (sentences.length === 1) {
+      body = sentences[0];
+    } else if (sentences.length === 2) {
+      body = `${sentences[0]}. Meanwhile, ${sentences[1]}.`;
+    } else {
+      body = `${sentences[0]}. Meanwhile, ${sentences[1]}. And ${sentences[2]}.`;
+    }
+
+    const tags = picked.flatMap((u) => hashtagsFor(hashtagPool, startIdx, 1, [u.primaryTag]));
+    const dedupedTags = [...new Set(tags)].slice(0, 3);
+
+    text = truncate(clean(`${intro} ${body} ${closer} ${dedupedTags.join(' ')}`), 280);
+    attempt++;
+  } while (usedTexts.has(text) && attempt < 20);
+
+  usedTexts.add(text);
+
+  const mentions = mentionsFor(picked.map((u) => u.matchText).join(' '), 2);
+  const finalTags = [...new Set(picked.flatMap((u) => hashtagsFor(hashtagPool, startIdx, 1, [u.primaryTag]))).values()].slice(0, 3);
+
+  return {
+    id: `d${dayIndex + 1}-world`,
+    text,
+    hashtags: finalTags,
+    mentions,
+    basedOn: picked.map((u) => u.title).join(', '),
+  };
 }
 
-const SKYA_ROTATION = 8; // matches skyaFeatureLine's rotation length
+/**
+ * Builds the day's SKYA post — led by one of its real feature/USP lines,
+ * not a restatement of the day's trending topic.
+ */
+function buildSkyaTweet(dayIndex: number, hashtagPool: string[], usedTexts: Set<string>): GeneratedTweet {
+  let attempt = 0;
+  let text = '';
+  do {
+    const feature = skyaFeatureLine(dayIndex + attempt);
+    const tags = hashtagsFor(hashtagPool, dayIndex + attempt, 1);
+    const finalTags = [...new Set([...tags, SKYA_HASHTAG])];
+    text = truncate(clean(`${feature} ${finalTags.join(' ')}`), 280);
+    attempt++;
+  } while (usedTexts.has(text) && attempt < 20);
 
-function buildSkyaTweet(globalIndex: number, unit: ContentUnit | undefined, tags: string[]): GeneratedTweet {
-  // Leads with SKYA's own feature/USP, not a restatement of the day's
-  // trending topic — only a very light, optional categorical nod at the
-  // end keeps it from feeling completely disconnected from the rest of the
-  // day's content, without making SKYA's own message secondary.
-  const feature = skyaFeatureLine(globalIndex);
-  const categoryNote = unit ? ` Worth asking even in ${unit.category.toLowerCase()}.` : '';
-  const text = clean(`${feature}${categoryNote} ${tags.join(' ')}`);
+  usedTexts.add(text);
+
   return {
-    id: `skya-${globalIndex}`,
-    text: truncate(text, 280),
-    hashtags: tags,
+    id: `skya-${dayIndex}`,
+    text,
+    hashtags: [SKYA_HASHTAG],
     mentions: [],
-    basedOn: unit ? unit.title : 'SKYA',
+    basedOn: 'SKYA',
   };
 }
 
@@ -298,100 +262,34 @@ export function generateFiveDayTwitterPlan(
 ): DayPlan[] {
   const topicUnits = topicsToUnits(topics);
   const hashtagUnits = hashtagsToUnits(xTrends, topics);
-  const allUnits = [...topicUnits, ...hashtagUnits];
 
   const globalHashtagPool =
     xTrends.length > 0
       ? xTrends.slice().sort((a, b) => a.rank - b.rank).map((t) => cleanHashtag(t.hashtag)).filter(Boolean)
       : ['#AI', '#ArtificialIntelligence', '#TechNews', '#AITrends'];
 
-  // ONE shuffle for the whole week (not reshuffled per day) — this is what
-  // guarantees content only repeats after every other unit has had a turn,
-  // instead of the same topic resurfacing the very next day.
-  const unitSeed = 424243;
-  const shuffledUnits = allUnits.length > 0 ? seededShuffle(allUnits, unitSeed) : [];
-
-  // Per-unit archetype ordering: when a given topic/hashtag inevitably has
-  // to be reused (small real data pool, only 5 days of imagination to work
-  // with), it cycles through a DIFFERENT shuffled order of styles unique to
-  // that unit — so reuse #2 of "Claude Fable 5.2" never lands on the same
-  // angle as reuse #1 until every style has actually been tried on it.
-  const richArchetypeOrderByUnit = new Map<string, RichArchetype[]>();
-  const lightArchetypeOrderByUnit = new Map<string, LightArchetype[]>();
-  const usageCountByUnit = new Map<string, number>();
-
-  function nextArchetypeFor(unit: ContentUnit): RichArchetype | LightArchetype {
-    const usage = usageCountByUnit.get(unit.id) ?? 0;
-    usageCountByUnit.set(unit.id, usage + 1);
-
-    if (unit.kind === 'topic') {
-      if (!richArchetypeOrderByUnit.has(unit.id)) {
-        richArchetypeOrderByUnit.set(unit.id, seededShuffle(RICH_ARCHETYPES, hashSeed(unit.id)));
-      }
-      const order = richArchetypeOrderByUnit.get(unit.id)!;
-      return order[usage % order.length];
-    }
-
-    if (!lightArchetypeOrderByUnit.has(unit.id)) {
-      lightArchetypeOrderByUnit.set(unit.id, seededShuffle(LIGHT_ARCHETYPES, hashSeed(unit.id)));
-    }
-    const order = lightArchetypeOrderByUnit.get(unit.id)!;
-    return order[usage % order.length];
-  }
+  // Shuffle topics and hashtags separately, then put topics first. Topics
+  // carry the actual story (a headline + description); hashtags are just a
+  // trending tag with no real narrative behind them. Putting topics first
+  // means the "what's happening" roundup leads with real stories on as many
+  // days as there are topics, and only falls back to hashtag-only items once
+  // every real topic has already been featured.
+  const shuffledTopics = topicUnits.length > 0 ? seededShuffle(topicUnits, 424243) : [];
+  const shuffledHashtagUnits = hashtagUnits.length > 0 ? seededShuffle(hashtagUnits, 909091) : [];
+  const shuffledUnits = [...shuffledTopics, ...shuffledHashtagUnits];
+  const usedTexts = new Set<string>();
 
   const days: DayPlan[] = [];
-
   for (let dayIndex = 0; dayIndex < 5; dayIndex++) {
     const date = new Date(startDate);
     date.setDate(date.getDate() + dayIndex);
     const dateISO = date.toISOString().slice(0, 10);
     const label = date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 
-    const tweets: GeneratedTweet[] = [];
+    const worldTweet = buildWorldRoundup(dayIndex, shuffledUnits, globalHashtagPool, usedTexts);
+    const skyaTweet = buildSkyaTweet(dayIndex, globalHashtagPool, usedTexts);
 
-    if (shuffledUnits.length > 0) {
-      const mythSlot = dayIndex % 3; // rotates which of the 3 main slots tells the myth-vs-fact story
-
-      for (let slot = 0; slot < 3; slot++) {
-        const globalSlotIndex = dayIndex * 4 + slot;
-        const unit = shuffledUnits[globalSlotIndex % shuffledUnits.length];
-        const tags = hashtagsFor(globalHashtagPool, globalSlotIndex, slot === 1 ? 2 : 3, [unit.primaryTag]);
-        const mentions = mentionsFor(unit.matchText);
-
-        let text: string;
-        if (slot === mythSlot) {
-          // Guaranteed once-per-day storytelling slot — doesn't consume a
-          // turn from that unit's normal archetype rotation, since it's a
-          // fixed, separate format rather than one of the general angles.
-          text = unit.kind === 'topic' ? mythVsFactRich(unit, tags) : mythVsFactLight(unit, tags);
-        } else {
-          const archetype = nextArchetypeFor(unit);
-          if (unit.kind === 'topic') {
-            const base = (archetype as RichArchetype)(unit, tags, mentions);
-            text = mentions.length > 0 && !base.includes(mentions[0]) ? `${base} ${mentionLine(mentions)}` : base;
-          } else {
-            text = (archetype as LightArchetype)(unit, tags);
-          }
-        }
-
-        tweets.push({
-          id: `d${dayIndex + 1}-${slot + 1}`,
-          text: truncate(clean(text), 280),
-          hashtags: tags,
-          mentions: slot === mythSlot ? [] : mentions,
-          basedOn: unit.title,
-        });
-      }
-
-      // 4th slot: SKYA's own feature/USP, only loosely tied to the day.
-      const skyaGlobalIndex = dayIndex * 4 + 3;
-      const skyaUnit = shuffledUnits[skyaGlobalIndex % shuffledUnits.length];
-      const skyaTags = hashtagsFor(globalHashtagPool, skyaGlobalIndex, 2, [skyaUnit.primaryTag]);
-      if (!skyaTags.includes(SKYA_HASHTAG)) skyaTags.push(SKYA_HASHTAG);
-      tweets.push(buildSkyaTweet(dayIndex, skyaUnit, skyaTags));
-    }
-
-    days.push({ day: dayIndex + 1, label, dateISO, tweets });
+    days.push({ day: dayIndex + 1, label, dateISO, tweets: [worldTweet, skyaTweet] });
   }
 
   return days;
