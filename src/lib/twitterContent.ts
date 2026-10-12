@@ -294,18 +294,63 @@ function buildWorldRoundup(
   };
 }
 
+// Short bridges from "here's what's happening in AI" into a SKYA feature
+// line, so the SKYA post reads as commentary tied to the day's real news
+// rather than a standalone ad dropped in regardless of context.
+const SKYA_BRIDGES = [
+  (name: string) => `with everyone talking about ${name} today, worth asking —`,
+  (name: string) => `stories like ${name} are exactly why this matters:`,
+  (name: string) => `${name} is the headline, but here's the part most people miss —`,
+  (name: string) => `every time there's news like ${name}, we get the same question:`,
+  (name: string) => `${name} is a good reminder of something —`,
+  (name: string) => `in a week with news like ${name},`,
+];
+
 /**
- * Builds the day's SKYA post — led by one of its real feature/USP lines,
- * not a restatement of the day's trending topic.
+ * Builds the day's SKYA post as a blend: a short bridge off a real trending
+ * item from today's pool, then one of SKYA's own feature/USP lines — so it
+ * reads as commentary on current AI affairs, not a feature list dropped in
+ * with no connection to what's actually happening that day.
  */
-function buildSkyaTweet(dayIndex: number, hashtagPool: string[], usedTexts: Set<string>): GeneratedTweet {
+function buildSkyaTweet(
+  dayIndex: number,
+  units: ContentUnit[],
+  hashtagPool: string[],
+  usedTexts: Set<string>
+): GeneratedTweet {
+  // Offset by 2 past where the world-roundup tweet reads from that same
+  // day, so the SKYA post references a different story, not a repeat of
+  // what the first tweet already covered.
+  const bridgeUnit = units.length > 0 ? units[(dayIndex * 2 + 2) % units.length] : null;
+
   let attempt = 0;
   let text = '';
+  let usedBridge = false;
+
   do {
     const feature = skyaFeatureLine(dayIndex + attempt);
     const tags = hashtagsFor(hashtagPool, dayIndex + attempt, 1);
     const finalTags = [...new Set([...tags, SKYA_HASHTAG])];
-    text = truncate(clean(`${feature} ${finalTags.join(' ')}`), 280);
+
+    if (bridgeUnit) {
+      const bridgeFn = SKYA_BRIDGES[(dayIndex + attempt) % SKYA_BRIDGES.length];
+      const name = bridgeUnit.kind === 'topic' ? `"${truncate(bridgeUnit.title, 50)}"` : bridgeUnit.title;
+      const bridge = bridgeFn(name);
+      const blended = truncate(clean(`${bridge} ${feature} ${finalTags.join(' ')}`), 280);
+      // Only use the blended version if it still has real room for the
+      // feature line itself — otherwise the bridge eats the budget and the
+      // actual SKYA point gets cut, so fall back to feature-only that day.
+      if (blended.length <= 280 && !blended.endsWith('…')) {
+        text = blended;
+        usedBridge = true;
+      } else {
+        text = truncate(clean(`${feature} ${finalTags.join(' ')}`), 280);
+        usedBridge = false;
+      }
+    } else {
+      text = truncate(clean(`${feature} ${finalTags.join(' ')}`), 280);
+      usedBridge = false;
+    }
     attempt++;
   } while (usedTexts.has(text) && attempt < 20);
 
@@ -316,7 +361,7 @@ function buildSkyaTweet(dayIndex: number, hashtagPool: string[], usedTexts: Set<
     text,
     hashtags: [SKYA_HASHTAG],
     mentions: [],
-    basedOn: 'SKYA',
+    basedOn: usedBridge && bridgeUnit ? `SKYA + ${bridgeUnit.title}` : 'SKYA',
   };
 }
 
@@ -352,7 +397,7 @@ export function generateFiveDayTwitterPlan(
     const label = date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 
     const worldTweet = buildWorldRoundup(dayIndex, shuffledUnits, globalHashtagPool, usedTexts);
-    const skyaTweet = buildSkyaTweet(dayIndex, globalHashtagPool, usedTexts);
+    const skyaTweet = buildSkyaTweet(dayIndex, shuffledUnits, globalHashtagPool, usedTexts);
 
     days.push({ day: dayIndex + 1, label, dateISO, tweets: [worldTweet, skyaTweet] });
   }
