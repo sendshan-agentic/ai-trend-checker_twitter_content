@@ -8,6 +8,7 @@ export type GeneratedTweet = {
   hashtags: string[];
   mentions: string[];
   basedOn: string;
+  kind?: 'roundup' | 'skya' | 'hot-take';
 };
 
 export type DayPlan = {
@@ -365,6 +366,99 @@ function buildSkyaTweet(
   };
 }
 
+/**
+ * OPINIONATED / "HOT TAKE" POSTS
+ *
+ * Posted every other day (days 1, 3, 5). Written to read like a person with a
+ * point of view, not a newsroom: short lines, a clear stance, no hashtags, no
+ * links, no @-tags. That is deliberate. Posts that look like marketing get
+ * scrolled past; a sharp, arguable opinion gets replies and quote-posts, which
+ * is what the algorithm actually rewards.
+ *
+ * Ground rules baked into the wording below:
+ *  - Takes target ideas, hype and industry habits, never named individuals.
+ *  - They are framed as opinion ("my take", "unpopular opinion"), not as
+ *    claims of fact about a specific company.
+ *  - Nothing here puts words in a real person's mouth.
+ * Edit or extend the lists freely. Keep each one under 280 characters.
+ */
+const HOT_TAKES_EVERGREEN: string[] = [
+  "unpopular opinion: most \"AI startups\" are a prompt, a logo and a stripe account.\n\nthe moat is distribution, not the model. fight me.",
+  "prompt engineering isn't dead.\n\nbut \"prompt engineer\" as a job title absolutely is.",
+  "every AI benchmark is a marketing asset now.\n\nif a model tops a leaderboard the week it launches, ask who picked the test.",
+  "hot take: AI won't replace your team.\n\nit will replace the meetings your team holds to avoid making decisions.",
+  "vibe coding is fun until you're debugging code nobody on the team has actually read.",
+  "the people who say \"AI content is spam\" are right.\n\nthe people publishing it at scale are also right that it still works. that's the uncomfortable part.",
+  "everyone's building an AI agent.\n\nalmost nobody is building the boring part that makes it trustworthy: logging, limits, and a way to say no.",
+  "AI detectors are the new snake oil.\n\nif a tool can't explain a false positive to a student, it shouldn't be used to fail one.",
+  "controversial, but true: most companies don't need a custom model.\n\nthey need clean data and someone who owns the process.",
+  "open vs closed models is the wrong debate.\n\nthe real question is who can afford to run either one at scale.",
+  "\"AI will take your job\" is lazy.\n\nthe sharper version: someone who's good at your job and good with AI will take your clients.",
+  "your customers are already asking ChatGPT about you.\n\nif you've never checked what it says, you're letting a stranger write your sales pitch.",
+  "ranking #1 on google and being invisible in AI answers is a real thing now.\n\nmost brands haven't noticed yet.",
+  "SEO isn't dead. but the click is.\n\nmore buyers get their shortlist from an AI answer and never open a search result.",
+  "AI models confidently get brand facts wrong every day: pricing, features, even what a company sells.\n\nthe wild part is how rarely the brand knows.",
+  "the AI hype cycle has two groups: people who think it changes everything next quarter, and people who think it changes nothing.\n\nboth are wrong on timing, both are loud.",
+  "regulation will not slow AI down.\n\nit will decide which companies can afford the lawyers to keep shipping.",
+  "if your AI strategy is \"add a chatbot\", you don't have an AI strategy. you have a widget.",
+];
+
+// Used only when a real trending topic is available; {{T}} is swapped for it.
+const HOT_TAKES_TOPIC: string[] = [
+  "everyone's posting about {{T}}.\n\nalmost nobody has shipped anything real with it yet. give it a quarter.",
+  "my take: {{T}} matters less than the headlines say.\n\nthe real story is who can actually afford to run it.",
+  "{{T}} is getting all the attention today.\n\nthe boring infrastructure underneath it is where the money is.",
+  "can we talk about {{T}} without the hype for a second?\n\ngreat demo. now show me month-three retention.",
+  "hot take on {{T}}: the discourse is louder than the product.\n\nask me again in six months.",
+];
+
+function buildHotTake(
+  slot: number,
+  units: ContentUnit[],
+  usedTexts: Set<string>,
+  dayIndex: number
+): GeneratedTweet {
+  const topicUnits = units.filter((u) => u.kind === 'topic');
+
+  type Candidate = { text: string; basedOn: string };
+  const candidates: Candidate[] = HOT_TAKES_EVERGREEN.map((text) => ({ text, basedOn: 'Opinion' }));
+
+  if (topicUnits.length > 0) {
+    // Different trending topic for each hot-take slot so two takes in one
+    // week never lean on the same story.
+    const topic = topicUnits[(slot * 2 + 1) % topicUnits.length];
+    const name = `"${truncate(topic.title, 50)}"`;
+    HOT_TAKES_TOPIC.forEach((tpl) => {
+      candidates.push({ text: tpl.replace('{{T}}', name), basedOn: `Opinion on ${topic.title}` });
+    });
+  }
+
+  // One shuffle for the whole plan (stable seed) so slot 0, 1, 2 walk through
+  // different takes and never collide.
+  const order = seededShuffle(candidates, 777001 + candidates.length);
+  for (let i = 0; i < order.length; i++) {
+    const c = order[(slot * 3 + i) % order.length];
+    const text = c.text;
+    if (text.length <= 280 && !usedTexts.has(text)) {
+      usedTexts.add(text);
+      return {
+        id: `d${dayIndex + 1}-hot`,
+        text,
+        hashtags: [],
+        mentions: [],
+        basedOn: c.basedOn,
+        kind: 'hot-take',
+      };
+    }
+  }
+
+  // Unreachable in practice (pool is larger than the 3 slots needed), but
+  // never return nothing.
+  const fallback = HOT_TAKES_EVERGREEN[slot % HOT_TAKES_EVERGREEN.length];
+  usedTexts.add(fallback);
+  return { id: `d${dayIndex + 1}-hot`, text: fallback, hashtags: [], mentions: [], basedOn: 'Opinion', kind: 'hot-take' };
+}
+
 export function generateFiveDayTwitterPlan(
   topics: TrendingTopic[],
   xTrends: XTrend[],
@@ -399,7 +493,17 @@ export function generateFiveDayTwitterPlan(
     const worldTweet = buildWorldRoundup(dayIndex, shuffledUnits, globalHashtagPool, usedTexts);
     const skyaTweet = buildSkyaTweet(dayIndex, shuffledUnits, globalHashtagPool, usedTexts);
 
-    days.push({ day: dayIndex + 1, label, dateISO, tweets: [worldTweet, skyaTweet] });
+    const tweets: GeneratedTweet[] = [
+      { ...worldTweet, kind: 'roundup' },
+      { ...skyaTweet, kind: 'skya' },
+    ];
+
+    // Opinionated post every other day: days 1, 3 and 5.
+    if (dayIndex % 2 === 0) {
+      tweets.push(buildHotTake(dayIndex / 2, shuffledUnits, usedTexts, dayIndex));
+    }
+
+    days.push({ day: dayIndex + 1, label, dateISO, tweets });
   }
 
   return days;
